@@ -1,0 +1,101 @@
+╔════════════════════════════════════════════════════════════════╗
+║  COMBINATION SUM FINDER - EXCEL MASTER v2.0                   ║
+║  Quick Start Guide                                             ║
+╚════════════════════════════════════════════════════════════════╝
+
+YOUR FILES:
+-----------
+✓ Combo v1.0.py          → Your original working version (SAFE!)
+✓ Combo Excel v2.0.py    → NEW Excel-integrated version
+✓ README - Excel v2.0.md → Full documentation
+
+
+HOW TO TEST IT RIGHT NOW:
+--------------------------
+
+STEP 1: Open Excel
+   - Open any Excel file with numbers in a column
+   - Or create a new Excel file and type some numbers in column A
+
+STEP 2: Run the Excel version
+   Command:
+   python "Combo Excel v2.0.py"
+
+STEP 3: Connect to Excel
+   - Click "Connect to Excel" button
+   - Select your workbook from dropdown
+   - Select the sheet with numbers
+
+STEP 4: Import your data
+   - Leave the range EMPTY (it will use your current selection in Excel)
+   - Or type a range like: A1:A50
+   - Click "Import Data from Excel"
+   - You should see a preview of your numbers!
+
+STEP 5: Search for combinations
+   - Enter a Target Sum (e.g., 100)
+   - Set Tolerance to 0 for exact matches
+   - Click "Find Combinations"
+
+STEP 6: Magic happens!
+   - Click ANY result in the list
+   - Watch those cells HIGHLIGHT in Excel! ✨
+   - Click "Mark as Used" to permanently color them green
+
+
+WHAT'S AWESOME ABOUT v2.0:
+--------------------------
+• Click a result → Cells light up in Excel (yellow flash)
+• Mark as used → Cells turn green permanently
+• No more copy-pasting!
+• No more hunting for numbers in Excel!
+• Perfect for reconciliation work
+
+
+SIMPLE TEST EXAMPLE:
+--------------------
+1. Open Excel, type these numbers in column A:
+   10
+   20
+   30
+   40
+   50
+
+2. Select cells A1:A5 in Excel
+
+3. Run the app, connect to Excel, import data
+
+4. Search for target: 60
+   Result: {10, 20, 30} or {10, 50}
+
+5. Click any result → Those cells highlight in Excel!
+
+
+TROUBLESHOOTING:
+----------------
+
+Problem: "Could not connect to Excel"
+Solution: Make sure Excel is OPEN before clicking Connect
+
+Problem: "No data found"
+Solution: Make sure you selected cells in Excel first,
+          or specify a range like A1:A100
+
+Problem: Nothing happens when I click results
+Solution: Check if Excel is still open and the workbook wasn't closed
+
+
+YOUR v1.0 IS SAFE:
+------------------
+• We created v2.0 as a SEPARATE file
+• v1.0 still works exactly as before
+• Both use the same search algorithm
+• You can use whichever you prefer!
+
+
+NEED HELP?
+----------
+Read the full README - Excel v2.0.md for detailed instructions.
+
+
+Happy hunting! 🎯
