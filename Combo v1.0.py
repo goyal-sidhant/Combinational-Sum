@@ -24,13 +24,53 @@ class CombinationSumGUI:
         self.start_queue_check()
     
     def setup_ui(self):
-        # Main frame
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Configure grid weights
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        # Create canvas and scrollbar for scrolling support on small screens
+        canvas = tk.Canvas(self.root, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=canvas.yview)
+
+        # Scrollable frame that will contain all content
+        scrollable_frame = ttk.Frame(canvas, padding="10")
+
+        # Configure canvas
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Pack scrollbar and canvas
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        # Create window in canvas for the scrollable frame
+        canvas_frame = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+
+        # Bind mouse wheel events for scrolling
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+        def on_mousewheel_linux(event):
+            canvas.yview_scroll(-1, "units")
+
+        def on_mousewheel_linux_down(event):
+            canvas.yview_scroll(1, "units")
+
+        # Bind for Windows and Mac
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+        # Bind for Linux
+        canvas.bind_all("<Button-4>", on_mousewheel_linux)
+        canvas.bind_all("<Button-5>", on_mousewheel_linux_down)
+
+        # Update scroll region when frame size changes
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        scrollable_frame.bind("<Configure>", on_frame_configure)
+
+        # Make canvas expand to fill window width
+        def on_canvas_configure(event):
+            canvas.itemconfig(canvas_frame, width=event.width)
+
+        canvas.bind("<Configure>", on_canvas_configure)
+
+        # Main frame (now inside scrollable_frame)
+        main_frame = scrollable_frame
         main_frame.columnconfigure(1, weight=1)
         
         # Input Section
@@ -227,13 +267,13 @@ class CombinationSumGUI:
         
         return numbers
     
-    def find_combinations_simple(self, numbers, target, buffer, max_results, max_length):
+    def find_combinations_simple(self, numbers, target, buffer, max_results, max_length, start_time):
         """Super simple approach that finds SHORTEST combinations first"""
         # Sort in DESCENDING order (largest numbers first) for shorter combinations
         numbers.sort(reverse=True)
         results = []
         count = 0
-        
+
         def find_recursive(start_idx, current_sum, current_combo):
             nonlocal count
             if count >= max_results:
@@ -254,9 +294,9 @@ class CombinationSumGUI:
                     else:
                         results.append(('approx', current_combo.copy(), current_sum))
                     count += 1
-                    
+
                     # Send result immediately for streaming
-                    elapsed = 0.1 * count  # Fake timing for demo
+                    elapsed = time.time() - start_time  # Real elapsed time
                     exact_count = sum(1 for r in results if r[0] == 'exact')
                     approx_count = count - exact_count
                     
@@ -287,9 +327,13 @@ class CombinationSumGUI:
                 # Skip if way too big
                 if new_sum > target + buffer:
                     continue  # Don't break since we're going descending
-                
-                # Skip duplicates at same level
-                if i > start_idx and numbers[i] == numbers[i - 1]:
+
+                # Skip duplicates at same level to avoid duplicate combinations
+                # This is correct: it only skips when we're at the same recursion level (i > start_idx)
+                # which prevents exploring the same subproblem twice with different instances of the same number
+                # Example: [1a, 1b, 2] - at level 0, we try 1a, then skip 1b (would create same subtree)
+                # But when recursing from 1a, we can still use 1b at the next level
+                if i > start_idx and abs(numbers[i] - numbers[i - 1]) < 1e-9:
                     continue
                 
                 # Recursive call
@@ -305,14 +349,14 @@ class CombinationSumGUI:
         """Worker thread that finds combinations and puts them in queue"""
         try:
             start_time = time.time()
-            
+
             # Use the simple recursive method with immediate streaming
-            self.find_combinations_simple(numbers, target, buffer, max_results, max_length)
+            self.find_combinations_simple(numbers, target, buffer, max_results, max_length, start_time)
             
             # Send completion signal
             elapsed = time.time() - start_time
-            exact_count = len([c for c in self.exact_combinations if c])
-            approx_count = len([c for c in self.approx_combinations if c])
+            exact_count = len(self.exact_combinations)
+            approx_count = len(self.approx_combinations)
             
             self.result_queue.put({
                 'type': 'complete',
@@ -432,7 +476,7 @@ class CombinationSumGUI:
             # Stop any existing search and reset state
             if self.is_running:
                 self.stop_event.set()
-                time.sleep(0.1)
+                # Thread will stop on next iteration - no need to block UI
             
             # Clear previous results
             self.exact_combinations = []
@@ -476,16 +520,19 @@ class CombinationSumGUI:
     
     def search_completed(self, exact_count, approx_count, elapsed):
         """Handle search completion"""
+        # Check if search was stopped BEFORE clearing the event
+        was_stopped = self.stop_event.is_set()
+
         # Reset threading state
         self.is_running = False
         self.stop_event.clear()
-        
-        # Reset button states  
+
+        # Reset button states
         self.find_button.config(state="normal")
         self.stop_button.config(state="disabled")
-        
+
         total = exact_count + approx_count
-        if self.stop_event.is_set():
+        if was_stopped:
             self.status_label.config(text=f"🛑 Search stopped. Found {total} combinations ({exact_count} exact, {approx_count} approx) in {elapsed:.2f}s")
         else:
             self.status_label.config(text=f"✅ Search completed! Found {total} combinations ({exact_count} exact, {approx_count} approx) in {elapsed:.2f}s")
@@ -498,7 +545,7 @@ class CombinationSumGUI:
         # Stop any running search first
         if self.is_running:
             self.stop_event.set()
-            time.sleep(0.1)  # Give thread time to stop
+            # Thread will stop on next iteration - no need to block UI
         
         # Reset threading state
         self.is_running = False
@@ -711,9 +758,9 @@ class CombinationSumGUI:
                 # This is a complete number match - highlight it
                 self.original_text.tag_add("highlight", pos, end_pos)
                 found_count += 1
-            
+
             # Move to the character after the current match to continue searching
-                start_pos = f"{pos}+1c"
+            start_pos = f"{pos}+1c"
     
     def run_quick_test(self):
         """Run a quick test to verify the algorithm works"""
