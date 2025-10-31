@@ -1,14 +1,12 @@
 """
-Combination Sum Finder - Excel Master Edition v2.0
-Enhanced with direct Excel integration for live cell highlighting and marking
+Combination Sum Finder - Excel Master Edition v2.1
+FIXED: Text visibility and proper filtered data reading
 """
 
 import sys
 import time
 from typing import List, Tuple
 from dataclasses import dataclass
-import threading
-import queue
 
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -35,7 +33,7 @@ class Combination:
 
 class ExcelBridge(QObject):
     """Handles all Excel interactions"""
-    data_loaded = pyqtSignal(list, list)  # numbers, indices
+    data_loaded = pyqtSignal(list, list)  # numbers, cell_addresses
     error_occurred = pyqtSignal(str)
 
     def __init__(self):
@@ -44,7 +42,7 @@ class ExcelBridge(QObject):
         self.book = None
         self.sheet = None
         self.original_range = None
-        self.cell_indices = []  # Maps number index to Excel cell position
+        self.cell_addresses = []  # Store actual Excel addresses
 
     def connect_to_excel(self):
         """Connect to active Excel instance"""
@@ -88,52 +86,82 @@ class ExcelBridge(QObject):
         return [sheet.name for sheet in self.book.sheets]
 
     def read_selection(self, sheet_name, selection_range=None, filtered_only=True):
-        """Read data from Excel selection or specified range"""
+        """Read data from Excel selection or specified range - PROPERLY handling filters"""
         try:
             self.sheet = self.book.sheets[sheet_name]
 
-            # Get range - either from parameter or current selection
+            # Get range
             if selection_range:
                 rng = self.sheet.range(selection_range)
             else:
-                rng = self.app.selection
+                # Get current selection from the sheet's application
+                selection = self.sheet.api.Application.Selection
+                rng = self.sheet.range(selection.Address)
 
             self.original_range = rng
 
-            # Get all values
-            values = rng.value
+            values = []
+            cell_addresses = []
 
-            # Handle different return types from xlwings
-            flat_values = []
-            flat_indices = []
+            # If filtered_only is True and AutoFilter is active
+            if filtered_only and hasattr(self.sheet.api, 'AutoFilterMode') and self.sheet.api.AutoFilterMode:
+                # Use xlwings built-in method to get visible cells only
+                # This is the correct way to handle filtered data
+                try:
+                    # Get each cell in the range and check if it's visible
+                    for cell in rng:
+                        # Check if the row is hidden (filtered out)
+                        if not cell.api.EntireRow.Hidden:
+                            val = cell.value
+                            if val is not None and self._is_number(val):
+                                values.append(float(val))
+                                # Calculate relative position
+                                row_offset = cell.row - rng.row
+                                col_offset = cell.column - rng.column
+                                cell_addresses.append((row_offset, col_offset))
+                except Exception as e:
+                    # Fallback method using COM API directly
+                    visible_cells = rng.api.SpecialCells(12)  # xlCellTypeVisible
+                    for cell in visible_cells:
+                        val = cell.Value
+                        if val is not None and self._is_number(val):
+                            values.append(float(val))
+                            row_offset = cell.Row - rng.api.Cells(1, 1).Row
+                            col_offset = cell.Column - rng.api.Cells(1, 1).Column
+                            cell_addresses.append((row_offset, col_offset))
+            else:
+                # No filter or filtered_only is False - read all cells normally
+                all_values = rng.value
 
-            if values is None:
-                self.error_occurred.emit("No data found in selection")
-                return []
+                if all_values is None:
+                    self.error_occurred.emit("No data found in selection")
+                    return []
 
-            # Convert to list if single value
-            if not isinstance(values, list):
-                values = [[values]]
-            elif values and not isinstance(values[0], list):
-                values = [[v] for v in values]
+                # Handle different data structures (single value, 1D array, 2D array)
+                if not isinstance(all_values, list):
+                    if self._is_number(all_values):
+                        values = [float(all_values)]
+                        cell_addresses = [(0, 0)]
+                else:
+                    # Handle 1D array
+                    if not any(isinstance(item, list) for item in all_values):
+                        for i, val in enumerate(all_values):
+                            if val is not None and self._is_number(val):
+                                values.append(float(val))
+                                cell_addresses.append((i, 0))
+                    else:
+                        # Handle 2D array
+                        for i, row in enumerate(all_values):
+                            if not isinstance(row, list):
+                                row = [row]
+                            for j, val in enumerate(row):
+                                if val is not None and self._is_number(val):
+                                    values.append(float(val))
+                                    cell_addresses.append((i, j))
 
-            # Flatten 2D array
-            for i, row in enumerate(values):
-                if not isinstance(row, list):
-                    row = [row]
-                for j, val in enumerate(row):
-                    if val is not None and self._is_number(val):
-                        flat_values.append(float(val))
-                        flat_indices.append((i, j))
-
-            self.cell_indices = flat_indices
-
-            # If filtered_only and there's a filter, get only visible cells
-            # Note: This is complex with xlwings, simplified for now
-            # You can enhance this later if needed
-
-            self.data_loaded.emit(flat_values, flat_indices)
-            return flat_values
+            self.cell_addresses = cell_addresses
+            self.data_loaded.emit(values, cell_addresses)
+            return values
 
         except Exception as e:
             self.error_occurred.emit(f"Error reading Excel: {str(e)}")
@@ -150,7 +178,7 @@ class ExcelBridge(QObject):
     def highlight_cells(self, indices: List[int], color_hex='#FFFF00'):
         """Temporarily highlight specific cells in Excel"""
         try:
-            if not self.original_range or not self.cell_indices:
+            if not self.original_range or not self.cell_addresses:
                 return
 
             # Clear previous highlighting first
@@ -161,8 +189,8 @@ class ExcelBridge(QObject):
 
             # Highlight selected cells
             for idx in indices:
-                if idx < len(self.cell_indices):
-                    row_offset, col_offset = self.cell_indices[idx]
+                if idx < len(self.cell_addresses):
+                    row_offset, col_offset = self.cell_addresses[idx]
                     cell = self.original_range[row_offset, col_offset]
                     cell.color = rgb
 
@@ -172,15 +200,15 @@ class ExcelBridge(QObject):
     def color_cells_permanent(self, indices: List[int], color_hex='#90EE90'):
         """Permanently color cells (for marking as 'used')"""
         try:
-            if not self.original_range or not self.cell_indices:
+            if not self.original_range or not self.cell_addresses:
                 return
 
             # Convert hex color to RGB
             rgb = self._hex_to_rgb(color_hex)
 
             for idx in indices:
-                if idx < len(self.cell_indices):
-                    row_offset, col_offset = self.cell_indices[idx]
+                if idx < len(self.cell_addresses):
+                    row_offset, col_offset = self.cell_addresses[idx]
                     cell = self.original_range[row_offset, col_offset]
                     cell.color = rgb
 
@@ -232,7 +260,7 @@ class CombinationFinder(QThread):
         self.stop_flag = True
 
     def run(self):
-        """Main search algorithm - same as v1.0 but threaded"""
+        """Main search algorithm"""
         start_time = time.time()
 
         # Sort numbers descending for shorter combinations first
@@ -312,9 +340,92 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.setup_connections()
+        self.apply_dark_theme()
+
+    def apply_dark_theme(self):
+        """Apply a dark theme with better contrast"""
+        dark_style = """
+        QMainWindow {
+            background-color: #2b2b2b;
+        }
+        QGroupBox {
+            background-color: #353535;
+            border: 2px solid #555;
+            border-radius: 5px;
+            margin-top: 10px;
+            padding-top: 10px;
+            color: #ffffff;
+            font-weight: bold;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px 0 5px;
+        }
+        QLabel {
+            color: #ffffff;
+        }
+        QPushButton {
+            background-color: #454545;
+            color: #ffffff;
+            border: 1px solid #555;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        QPushButton:hover {
+            background-color: #555555;
+        }
+        QPushButton:pressed {
+            background-color: #353535;
+        }
+        QPushButton:disabled {
+            background-color: #2b2b2b;
+            color: #888888;
+        }
+        QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox {
+            background-color: #454545;
+            color: #ffffff;
+            border: 1px solid #555;
+            padding: 3px;
+            border-radius: 3px;
+        }
+        QTextEdit {
+            background-color: #454545;
+            color: #ffffff;
+            border: 1px solid #555;
+        }
+        QListWidget {
+            background-color: #353535;
+            color: #ffffff;
+            border: 1px solid #555;
+            outline: none;
+        }
+        QListWidget::item {
+            border-bottom: 1px solid #454545;
+            padding: 5px;
+        }
+        QListWidget::item:selected {
+            background-color: #555555;
+        }
+        QProgressBar {
+            background-color: #454545;
+            border: 1px solid #555;
+            border-radius: 3px;
+            text-align: center;
+            color: white;
+        }
+        QProgressBar::chunk {
+            background-color: #4CAF50;
+            border-radius: 3px;
+        }
+        QCheckBox {
+            color: #ffffff;
+        }
+        """
+        self.setStyleSheet(dark_style)
 
     def init_ui(self):
-        self.setWindowTitle("Combination Sum Finder - Excel Master Edition v2.0")
+        self.setWindowTitle("Combination Sum Finder - Excel Master Edition v2.1")
         self.setGeometry(100, 100, 1300, 850)
 
         # Central widget with splitter
@@ -338,6 +449,7 @@ class MainWindow(QMainWindow):
 
         # Status Bar
         self.status_bar = self.statusBar()
+        self.status_bar.setStyleSheet("color: #ffffff; background-color: #2b2b2b;")
         self.status_bar.showMessage("Ready. Connect to Excel to start.")
 
     def create_excel_panel(self):
@@ -349,13 +461,13 @@ class MainWindow(QMainWindow):
         status_layout = QHBoxLayout()
         status_layout.addWidget(QLabel("Status:"))
         self.lbl_excel_status = QLabel("Not connected")
-        self.lbl_excel_status.setStyleSheet("color: red; font-weight: bold;")
+        self.lbl_excel_status.setStyleSheet("color: #ff6b6b; font-weight: bold;")
         status_layout.addWidget(self.lbl_excel_status)
         status_layout.addStretch()
         layout.addLayout(status_layout)
 
         # Connect button
-        self.btn_connect = QPushButton("🔌 Connect to Excel")
+        self.btn_connect = QPushButton("Connect to Excel")
         self.btn_connect.setMinimumHeight(35)
         self.btn_connect.clicked.connect(self.connect_to_excel)
         layout.addWidget(self.btn_connect)
@@ -363,35 +475,35 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel(""))  # Spacer
 
         # Workbook selector
-        layout.addWidget(QLabel("📚 Workbook:"))
+        layout.addWidget(QLabel("Workbook:"))
         self.combo_workbook = QComboBox()
         self.combo_workbook.currentTextChanged.connect(self.on_workbook_changed)
         layout.addWidget(self.combo_workbook)
 
         # Sheet selector
-        layout.addWidget(QLabel("📄 Sheet:"))
+        layout.addWidget(QLabel("Sheet:"))
         self.combo_sheet = QComboBox()
         layout.addWidget(self.combo_sheet)
 
         # Range input
-        layout.addWidget(QLabel("📍 Range (optional):"))
+        layout.addWidget(QLabel("Range (optional):"))
         self.txt_range = QLineEdit()
         self.txt_range.setPlaceholderText("e.g., A1:A100 or leave empty")
         layout.addWidget(self.txt_range)
 
-        hint_label = QLabel("💡 Leave empty to use current\nExcel selection")
-        hint_label.setStyleSheet("color: gray; font-size: 9pt;")
+        hint_label = QLabel("Leave empty to use current\nExcel selection")
+        hint_label.setStyleSheet("color: #888888; font-size: 9pt;")
         layout.addWidget(hint_label)
 
         # Filtered checkbox
-        self.chk_filtered = QCheckBox("📋 Read filtered cells only")
-        self.chk_filtered.setChecked(False)
+        self.chk_filtered = QCheckBox("Read filtered cells only")
+        self.chk_filtered.setChecked(True)  # Default to true
         layout.addWidget(self.chk_filtered)
 
         # Import button
-        self.btn_import = QPushButton("📥 Import Data from Excel")
+        self.btn_import = QPushButton("Import Data from Excel")
         self.btn_import.setMinimumHeight(35)
-        self.btn_import.setStyleSheet("font-weight: bold;")
+        self.btn_import.setStyleSheet("background-color: #4CAF50; font-weight: bold;")
         self.btn_import.clicked.connect(self.import_data)
         self.btn_import.setEnabled(False)
         layout.addWidget(self.btn_import)
@@ -410,7 +522,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(preview_group)
 
         # Color controls
-        color_group = QGroupBox("🎨 Cell Colors")
+        color_group = QGroupBox("Cell Colors")
         color_layout = QVBoxLayout()
 
         # Highlight color
@@ -420,8 +532,8 @@ class MainWindow(QMainWindow):
         self.btn_highlight_color.setStyleSheet("background-color: #FFFF00; border: 1px solid black;")
         self.btn_highlight_color.setMaximumWidth(40)
         self.btn_highlight_color.clicked.connect(lambda: self.pick_color('highlight'))
-        highlight_layout.addWidget(self.btn_highlight_color)
         self.highlight_color = '#FFFF00'
+        highlight_layout.addWidget(self.btn_highlight_color)
         highlight_layout.addStretch()
         color_layout.addLayout(highlight_layout)
 
@@ -432,18 +544,18 @@ class MainWindow(QMainWindow):
         self.btn_permanent_color.setStyleSheet("background-color: #90EE90; border: 1px solid black;")
         self.btn_permanent_color.setMaximumWidth(40)
         self.btn_permanent_color.clicked.connect(lambda: self.pick_color('permanent'))
-        permanent_layout.addWidget(self.btn_permanent_color)
         self.permanent_color = '#90EE90'
+        permanent_layout.addWidget(self.btn_permanent_color)
         permanent_layout.addStretch()
         color_layout.addLayout(permanent_layout)
 
-        self.btn_mark_used = QPushButton("✅ Mark Selected as Used")
+        self.btn_mark_used = QPushButton("Mark Selected as Used")
         self.btn_mark_used.setMinimumHeight(30)
         self.btn_mark_used.clicked.connect(self.mark_cells_as_used)
         self.btn_mark_used.setEnabled(False)
         color_layout.addWidget(self.btn_mark_used)
 
-        self.btn_clear_colors = QPushButton("🧹 Clear All Colors")
+        self.btn_clear_colors = QPushButton("Clear All Colors")
         self.btn_clear_colors.clicked.connect(self.clear_colors)
         color_layout.addWidget(self.btn_clear_colors)
 
@@ -460,7 +572,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
 
         # Search parameters
-        param_group = QGroupBox("🔍 Search Parameters")
+        param_group = QGroupBox("Search Parameters")
         param_layout = QGridLayout()
 
         param_layout.addWidget(QLabel("Target Sum:"), 0, 0)
@@ -470,7 +582,7 @@ class MainWindow(QMainWindow):
         self.spin_target.setMinimumWidth(120)
         param_layout.addWidget(self.spin_target, 0, 1)
 
-        param_layout.addWidget(QLabel("Tolerance (±):"), 0, 2)
+        param_layout.addWidget(QLabel("Tolerance:"), 0, 2)
         self.spin_tolerance = QDoubleSpinBox()
         self.spin_tolerance.setRange(0, 9999)
         self.spin_tolerance.setDecimals(2)
@@ -487,7 +599,7 @@ class MainWindow(QMainWindow):
         param_layout.addWidget(QLabel("Max Results:"), 1, 2)
         self.spin_max_results = QSpinBox()
         self.spin_max_results.setRange(1, 10000)
-        self.spin_max_results.setValue(1000)
+        self.spin_max_results.setValue(100)
         param_layout.addWidget(self.spin_max_results, 1, 3)
 
         param_group.setLayout(param_layout)
@@ -496,15 +608,16 @@ class MainWindow(QMainWindow):
         # Search buttons
         button_layout = QHBoxLayout()
 
-        self.btn_search = QPushButton("🔍 Find Combinations")
+        self.btn_search = QPushButton("Find Combinations")
         self.btn_search.setMinimumHeight(40)
-        self.btn_search.setStyleSheet("font-size: 12pt; font-weight: bold;")
+        self.btn_search.setStyleSheet("font-size: 12pt; font-weight: bold; background-color: #4CAF50;")
         self.btn_search.clicked.connect(self.start_search)
         self.btn_search.setEnabled(False)
         button_layout.addWidget(self.btn_search)
 
-        self.btn_stop = QPushButton("⏹️ Stop")
+        self.btn_stop = QPushButton("Stop")
         self.btn_stop.setMinimumHeight(40)
+        self.btn_stop.setStyleSheet("background-color: #f44336;")
         self.btn_stop.clicked.connect(self.stop_search)
         self.btn_stop.setEnabled(False)
         button_layout.addWidget(self.btn_stop)
@@ -519,14 +632,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.progress_bar)
 
         # Results
-        results_group = QGroupBox("📊 Results - Click any row to highlight in Excel")
+        results_group = QGroupBox("Results - Click any row to highlight in Excel")
         results_layout = QVBoxLayout()
 
         # Filter buttons
         filter_layout = QHBoxLayout()
         self.btn_show_all = QPushButton("All")
-        self.btn_show_exact = QPushButton("✅ Exact Only")
-        self.btn_show_approx = QPushButton("≈ Approximate Only")
+        self.btn_show_exact = QPushButton("Exact Only")
+        self.btn_show_approx = QPushButton("Approximate Only")
 
         self.btn_show_all.clicked.connect(lambda: self.filter_results('all'))
         self.btn_show_exact.clicked.connect(lambda: self.filter_results('exact'))
@@ -538,8 +651,9 @@ class MainWindow(QMainWindow):
         filter_layout.addStretch()
         results_layout.addLayout(filter_layout)
 
-        # Results list
+        # Results list with better visibility
         self.results_list = QListWidget()
+        self.results_list.setAlternatingRowColors(True)
         self.results_list.itemClicked.connect(self.on_result_selected)
         results_layout.addWidget(self.results_list)
 
@@ -557,8 +671,8 @@ class MainWindow(QMainWindow):
     def connect_to_excel(self):
         """Connect to Excel application"""
         if self.excel_bridge.connect_to_excel():
-            self.lbl_excel_status.setText("✅ Connected")
-            self.lbl_excel_status.setStyleSheet("color: green; font-weight: bold;")
+            self.lbl_excel_status.setText("Connected")
+            self.lbl_excel_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
 
             # Load workbooks
             workbooks = self.excel_bridge.get_open_workbooks()
@@ -566,10 +680,10 @@ class MainWindow(QMainWindow):
             self.combo_workbook.addItems(workbooks)
 
             self.btn_import.setEnabled(True)
-            self.status_bar.showMessage("✅ Connected to Excel successfully!")
+            self.status_bar.showMessage("Connected to Excel successfully!")
         else:
-            self.lbl_excel_status.setText("❌ Failed")
-            self.lbl_excel_status.setStyleSheet("color: red; font-weight: bold;")
+            self.lbl_excel_status.setText("Failed")
+            self.lbl_excel_status.setStyleSheet("color: #ff6b6b; font-weight: bold;")
 
     def on_workbook_changed(self, workbook_name):
         """When user selects a workbook"""
@@ -588,15 +702,16 @@ class MainWindow(QMainWindow):
         range_text = self.txt_range.text().strip()
         filtered_only = self.chk_filtered.isChecked()
 
+        self.status_bar.showMessage(f"Importing data (filtered={filtered_only})...")
         self.excel_bridge.read_selection(sheet_name, range_text or None, filtered_only)
 
-    def on_data_loaded(self, numbers, indices):
+    def on_data_loaded(self, numbers, cell_addresses):
         """Data successfully loaded from Excel"""
         self.current_numbers = numbers
-        self.current_indices = indices
+        self.current_indices = list(range(len(numbers)))  # Simple indices
 
         # Show preview
-        preview_text = f"✅ Loaded {len(numbers)} numbers\n\n"
+        preview_text = f"Loaded {len(numbers)} numbers\n\n"
         if len(numbers) <= 30:
             shown = numbers
         else:
@@ -609,12 +724,14 @@ class MainWindow(QMainWindow):
 
         self.txt_preview.setText(preview_text)
         self.btn_search.setEnabled(True)
-        self.status_bar.showMessage(f"✅ Loaded {len(numbers)} numbers from Excel")
+
+        filter_status = "filtered cells only" if self.chk_filtered.isChecked() else "all cells"
+        self.status_bar.showMessage(f"Loaded {len(numbers)} numbers from Excel ({filter_status})")
 
     def on_error(self, error_msg):
         """Handle Excel errors"""
         QMessageBox.critical(self, "Error", error_msg)
-        self.status_bar.showMessage("❌ Error occurred")
+        self.status_bar.showMessage("Error occurred")
 
     def start_search(self):
         """Start searching for combinations"""
@@ -636,7 +753,7 @@ class MainWindow(QMainWindow):
 
         self.finder_thread.setup(
             self.current_numbers,
-            list(range(len(self.current_numbers))),  # Use simple indices
+            self.current_indices,
             target,
             tolerance,
             max_length,
@@ -655,9 +772,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
 
         if tolerance > 0:
-            self.lbl_progress.setText(f"🔍 Searching for {target} ±{tolerance}...")
+            self.lbl_progress.setText(f"Searching for {target} +/- {tolerance}...")
         else:
-            self.lbl_progress.setText(f"🔍 Searching for exact match: {target}...")
+            self.lbl_progress.setText(f"Searching for exact match: {target}...")
 
         # Start search
         self.finder_thread.start()
@@ -666,7 +783,7 @@ class MainWindow(QMainWindow):
         """Stop the search"""
         if self.finder_thread:
             self.finder_thread.stop()
-            self.lbl_progress.setText("⏹️ Stopping search...")
+            self.lbl_progress.setText("Stopping search...")
 
     def on_search_progress(self, found, elapsed):
         """Update progress during search"""
@@ -675,7 +792,7 @@ class MainWindow(QMainWindow):
         self.lbl_progress.setText(f"Found {found} combinations in {elapsed:.1f}s ({rate:.1f}/sec)")
 
     def on_result_found(self, combination):
-        """New result found"""
+        """New result found - with better text visibility"""
         self.results.append(combination)
 
         # Format display
@@ -683,15 +800,19 @@ class MainWindow(QMainWindow):
                                       for n in combination.numbers) + "}"
 
         if combination.is_exact:
-            item_text = f"✅ [{len(combination.numbers)}] {numbers_str} = {combination.sum_value:.2f}"
+            # WHITE text on dark green background for better contrast
+            item_text = f"[{len(combination.numbers)}] {numbers_str} = {combination.sum_value:.2f}"
             item = QListWidgetItem(item_text)
-            item.setBackground(QColor(220, 255, 220))
+            item.setBackground(QColor(0, 100, 0))  # Dark green background
+            item.setForeground(QColor(255, 255, 255))  # WHITE text
         else:
+            # WHITE text on dark orange background for better contrast
             diff = combination.sum_value - self.spin_target.value()
             sign = "+" if diff > 0 else ""
-            item_text = f"≈ [{len(combination.numbers)}] {numbers_str} = {combination.sum_value:.2f} ({sign}{diff:.2f})"
+            item_text = f"[{len(combination.numbers)}] {numbers_str} = {combination.sum_value:.2f} ({sign}{diff:.2f})"
             item = QListWidgetItem(item_text)
-            item.setBackground(QColor(255, 250, 220))
+            item.setBackground(QColor(139, 69, 19))  # Dark orange/brown background
+            item.setForeground(QColor(255, 255, 255))  # WHITE text
 
         item.setData(Qt.ItemDataRole.UserRole, len(self.results) - 1)
         self.results_list.addItem(item)
@@ -706,7 +827,7 @@ class MainWindow(QMainWindow):
         exact_count = sum(1 for r in results if r.is_exact)
         approx_count = len(results) - exact_count
 
-        self.lbl_progress.setText(f"✅ Complete! Found {len(results)} combinations ({exact_count} exact, {approx_count} approx)")
+        self.lbl_progress.setText(f"Complete! Found {len(results)} combinations ({exact_count} exact, {approx_count} approx)")
         self.status_bar.showMessage(f"Search complete. Found {len(results)} combinations.")
 
     def on_result_selected(self, item):
@@ -721,7 +842,7 @@ class MainWindow(QMainWindow):
             # Highlight in Excel
             self.excel_bridge.highlight_cells(combination.indices, self.highlight_color)
 
-            self.status_bar.showMessage(f"✨ Highlighted {len(combination.indices)} cells in Excel")
+            self.status_bar.showMessage(f"Highlighted {len(combination.indices)} cells in Excel")
             self.btn_mark_used.setEnabled(True)
 
     def mark_cells_as_used(self):
@@ -737,27 +858,33 @@ class MainWindow(QMainWindow):
         current_item = self.results_list.currentItem()
         if current_item:
             current_text = current_item.text()
-            if not current_text.startswith("✓"):
-                current_item.setText("✓ " + current_text)
+            if not current_text.startswith("USED:"):
+                current_item.setText("USED: " + current_text)
                 current_item.setForeground(QColor(128, 128, 128))
 
-        self.status_bar.showMessage(f"✅ Marked {len(self.current_selected_indices)} cells as used")
+        self.status_bar.showMessage(f"Marked {len(self.current_selected_indices)} cells as used")
 
     def clear_colors(self):
         """Clear all Excel cell colors"""
         self.excel_bridge.clear_highlighting()
-        self.status_bar.showMessage("🧹 Cleared all cell colors in Excel")
+        self.status_bar.showMessage("Cleared all cell colors in Excel")
 
     def filter_results(self, filter_type):
         """Filter displayed results"""
         for i in range(self.results_list.count()):
             item = self.results_list.item(i)
+            text = item.text()
+
             if filter_type == 'all':
                 item.setHidden(False)
             elif filter_type == 'exact':
-                item.setHidden(not item.text().startswith("✅") and not item.text().startswith("✓ ✅"))
+                # Show only exact matches (dark green background)
+                is_exact = item.background().color() == QColor(0, 100, 0)
+                item.setHidden(not is_exact)
             elif filter_type == 'approx':
-                item.setHidden(not item.text().startswith("≈") and not item.text().startswith("✓ ≈"))
+                # Show only approximate matches (dark orange background)
+                is_approx = item.background().color() == QColor(139, 69, 19)
+                item.setHidden(not is_approx)
 
     def pick_color(self, color_type):
         """Open color picker dialog"""
@@ -774,9 +901,6 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-
-    # Set modern style
-    app.setStyle('Fusion')
 
     # Check if xlwings is available
     if not XLWINGS_AVAILABLE:
