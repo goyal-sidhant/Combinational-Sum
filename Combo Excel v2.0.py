@@ -501,9 +501,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.chk_filtered)
 
         # Import button
-        self.btn_import = QPushButton("Import Data from Excel")
+        self.btn_import = QPushButton("📥 Import Data from Excel")
         self.btn_import.setMinimumHeight(35)
-        self.btn_import.setStyleSheet("background-color: #4CAF50; font-weight: bold;")
+        self.btn_import.setStyleSheet("""
+            background-color: #4CAF50; 
+            font-weight: bold;
+            color: white;  /* WHITE text for visibility */
+        """)
         self.btn_import.clicked.connect(self.import_data)
         self.btn_import.setEnabled(False)
         layout.addWidget(self.btn_import)
@@ -608,16 +612,25 @@ class MainWindow(QMainWindow):
         # Search buttons
         button_layout = QHBoxLayout()
 
-        self.btn_search = QPushButton("Find Combinations")
+        self.btn_search = QPushButton("🔍 Find Combinations")
         self.btn_search.setMinimumHeight(40)
-        self.btn_search.setStyleSheet("font-size: 12pt; font-weight: bold; background-color: #4CAF50;")
+        self.btn_search.setStyleSheet("""
+            font-size: 12pt; 
+            font-weight: bold; 
+            background-color: #4CAF50;
+            color: white;  /* WHITE text for visibility */
+        """)
         self.btn_search.clicked.connect(self.start_search)
         self.btn_search.setEnabled(False)
         button_layout.addWidget(self.btn_search)
 
-        self.btn_stop = QPushButton("Stop")
+        self.btn_stop = QPushButton("⏹️ Stop")
         self.btn_stop.setMinimumHeight(40)
-        self.btn_stop.setStyleSheet("background-color: #f44336;")
+        self.btn_stop.setStyleSheet("""
+            background-color: #f44336;
+            color: white;  /* WHITE text for visibility */
+            font-weight: bold;
+        """)
         self.btn_stop.clicked.connect(self.stop_search)
         self.btn_stop.setEnabled(False)
         button_layout.addWidget(self.btn_stop)
